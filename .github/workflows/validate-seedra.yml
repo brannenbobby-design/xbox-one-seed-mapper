@@ -40,15 +40,105 @@ jobs:
         run: |
           cmake --build Seedra/build --target LIB_Seedra
 
-      - name: Record Seedra build information
+      - name: Create Xbox One validation harness
         run: |
-          echo "Seedra library compiled successfully with Clang 19." > seedra-validation-results.txt
+          cat > xbox_validation.cpp <<'CPP'
+          #include <algorithm>
+          #include <cmath>
+          #include <cstdint>
+          #include <iostream>
+          #include <limits>
+          #include <string>
+          #include <vector>
+
+          #include "terrain/generator.hpp"
+          #include "structures/placement/StaticStructures.hpp"
+          #include "structures/placement/DynamicStructures.hpp"
+
+          static long long dist2(const Pos2D& a, int x, int z) {
+              long long dx = static_cast<long long>(a.x) - x;
+              long long dz = static_cast<long long>(a.z) - z;
+              return dx * dx + dz * dz;
+          }
+
+          static Pos2D nearest(const std::vector<Pos2D>& positions, int x, int z) {
+              if (positions.empty()) return Pos2D(std::numeric_limits<int>::min(), std::numeric_limits<int>::min());
+              return *std::min_element(positions.begin(), positions.end(), [=](const Pos2D& a, const Pos2D& b) {
+                  return dist2(a, x, z) < dist2(b, x, z);
+              });
+          }
+
+          static void printCheck(const std::string& name, const Pos2D& actual, int expectedX, int expectedZ) {
+              std::cout << name
+                        << " expected=(" << expectedX << "," << expectedZ << ")"
+                        << " actual=(" << actual.x << "," << actual.z << ")"
+                        << " dx=" << (actual.x - expectedX)
+                        << " dz=" << (actual.z - expectedZ)
+                        << " distance=" << std::sqrt(static_cast<double>(dist2(actual, expectedX, expectedZ)))
+                        << "\n";
+          }
+
+          int main() {
+              constexpr std::int64_t seed = -8159138563860309866LL;
+              Generator generator(
+                  lce::CONSOLE::XBOX1,
+                  LCEVERSION::ELYTRA,
+                  seed,
+                  lce::WORLDSIZE::LARGE,
+                  lce::BIOMESCALE::LARGE
+              );
+
+              std::cout << "seed=" << seed << "\n";
+              std::cout << "console=XBOX1 version=ELYTRA world=LARGE biomeScale=LARGE\n";
+
+              Pos2D spawn = generator.getSpawnBlock();
+              printCheck("spawn", spawn, 164, 205);
+
+              auto villages = Placement::Village<false>::getAllPositions(&generator);
+              auto mansions = Placement::Mansion::getAllPositions(&generator);
+              auto features = Placement::Feature::getAllFeaturePositions(&generator);
+
+              std::vector<Pos2D> jungleTemples;
+              std::vector<Pos2D> swampHuts;
+              for (const auto& feature : features) {
+                  if (feature.m_type == StructureType::JungleTemple) jungleTemples.push_back(feature.m_pos);
+                  if (feature.m_type == StructureType::SwampHut) swampHuts.push_back(feature.m_pos);
+              }
+
+              std::cout << "counts villages=" << villages.size()
+                        << " mansions=" << mansions.size()
+                        << " jungleTemples=" << jungleTemples.size()
+                        << " swampHuts=" << swampHuts.size() << "\n";
+
+              printCheck("village_oak", nearest(villages, 548, 367), 548, 367);
+              printCheck("village_spruce", nearest(villages, -399, -459), -399, -459);
+              printCheck("mansion", nearest(mansions, 426, 122), 426, 122);
+              printCheck("jungle_temple", nearest(jungleTemples, 70, 337), 70, 337);
+              printCheck("witch_hut", nearest(swampHuts, 276, -191), 276, -191);
+
+              return 0;
+          }
+          CPP
+
+      - name: Compile Xbox One validation harness
+        run: |
+          clang++-19 \
+            -std=gnu++23 \
+            -stdlib=libc++ \
+            -O2 \
+            -ISeedra \
+            -ISeedra/lce/.. \
+            xbox_validation.cpp \
+            Seedra/build/libLIB_Seedra.a \
+            -pthread \
+            -o xbox_validation
+
+      - name: Run Xbox One validation
+        run: |
+          ./xbox_validation | tee seedra-validation-results.txt
           echo "" >> seedra-validation-results.txt
-          echo "Commit:" >> seedra-validation-results.txt
+          echo "Seedra commit:" >> seedra-validation-results.txt
           git -C Seedra rev-parse HEAD >> seedra-validation-results.txt
-          echo "" >> seedra-validation-results.txt
-          echo "Library:" >> seedra-validation-results.txt
-          find Seedra/build -name 'libLIB_Seedra.a' -print >> seedra-validation-results.txt
 
       - name: Upload validation results
         uses: actions/upload-artifact@v4

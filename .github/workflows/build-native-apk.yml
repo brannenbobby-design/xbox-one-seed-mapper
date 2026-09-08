@@ -1,0 +1,245 @@
+name: Build Native Seedra APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-native-apk.yml'
+      - 'xbox-one-seed-mapper-android-source-fixed.zip'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools, CMake and NDK
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;28.0.13004108"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Extract Android project
+        run: |
+          unzip -q xbox-one-seed-mapper-android-source-fixed.zip
+          mv xbox-one-seed-mapper-android android-app
+
+      - name: Add native Seedra engine
+        working-directory: android-app
+        run: |
+          mkdir -p app/src/main/cpp
+          git clone --recursive https://github.com/UtterEvergreen1/Seedra.git app/src/main/cpp/Seedra
+
+          cat > app/src/main/cpp/CMakeLists.txt <<'CMAKE'
+          cmake_minimum_required(VERSION 3.22.1)
+          project(seedmapper LANGUAGES C CXX)
+          set(CMAKE_CXX_STANDARD 23)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          set(LC_BUILD_EXECUTABLE OFF CACHE BOOL "" FORCE)
+          add_subdirectory(Seedra)
+          add_library(seedmapper SHARED native-lib.cpp)
+          target_include_directories(seedmapper PRIVATE Seedra)
+          target_link_libraries(seedmapper PRIVATE LIB_Seedra log)
+          CMAKE
+
+          cat > app/src/main/cpp/native-lib.cpp <<'CPP'
+          #include <jni.h>
+          #include <sstream>
+          #include <string>
+          #include <vector>
+          #include "terrain/generator.hpp"
+          #include "terrain/biomes/biome_t.hpp"
+          #include "structures/placement/StaticStructures.hpp"
+          #include "structures/placement/DynamicStructures.hpp"
+
+          static const char* biomeGroup(biome_t b) {
+              int id = static_cast<int>(b);
+              if (id >= 128) id -= 128;
+              switch (id) {
+                  case 0: case 7: case 10: case 24: return "ocean";
+                  case 2: case 17: case 37: case 38: case 39: return "desert";
+                  case 6: return "swamp";
+                  case 21: case 22: case 23: return "jungle";
+                  case 29: return "roofed_forest";
+                  case 14: case 15: return "mushroom";
+                  default: return "plains";
+              }
+          }
+
+          static void addStructure(std::ostringstream& out, bool& first, const char* type, const char* name, const Pos2D& p) {
+              if (!first) out << ',';
+              first = false;
+              out << "{\"type\":\"" << type << "\",\"name\":\"" << name << "\",\"x\":" << p.x << ",\"z\":" << p.z << '}';
+          }
+
+          extern "C" JNIEXPORT jstring JNICALL
+          Java_com_brannen_seedmapper_MainActivity_generateNative(JNIEnv* env, jclass, jstring seedText) {
+              const char* raw = env->GetStringUTFChars(seedText, nullptr);
+              std::string seed(raw ? raw : "0");
+              env->ReleaseStringUTFChars(seedText, raw);
+
+              try {
+                  constexpr auto worldSize = lce::WORLDSIZE::LARGE;
+                  Generator g(lce::CONSOLE::XBOX1, LCEVERSION::ELYTRA, seed, worldSize, lce::BIOMESCALE::LARGE);
+                  Placement::Village<false>::setWorldSize(worldSize);
+                  Placement::Mansion::setWorldSize(worldSize);
+                  Placement::Feature::setWorldSize(worldSize);
+
+                  auto villages = Placement::Village<false>::getAllPositions(&g);
+                  auto mansions = Placement::Mansion::getAllPositions(&g);
+                  auto features = Placement::Feature::getAllFeaturePositions(&g);
+                  Pos2D spawn = g.getSpawnBlock();
+                  int bound = g.getWorldCoordinateBounds();
+
+                  std::ostringstream out;
+                  out << "{\"engine\":\"seedra-native\",\"bounds\":{\"minX\":" << -bound << ",\"maxX\":" << bound
+                      << ",\"minZ\":" << -bound << ",\"maxZ\":" << bound << "},\"spawn\":{\"x\":" << spawn.x << ",\"z\":" << spawn.z << "},\"structures\":[";
+
+                  bool first = true;
+                  for (const auto& p : villages) addStructure(out, first, "village", "Village", p);
+                  for (const auto& p : mansions) addStructure(out, first, "mansion", "Woodland Mansion", p);
+                  for (const auto& f : features) {
+                      if (f.m_type == StructureType::JungleTemple) addStructure(out, first, "temple", "Jungle Temple", f.m_pos);
+                      if (f.m_type == StructureType::SwampHut) addStructure(out, first, "witch_hut", "Witch Hut", f.m_pos);
+                  }
+                  out << "],\"regions\":[";
+
+                  bool firstRegion = true;
+                  const int step = 192;
+                  const int radius = 145;
+                  for (int z = -bound; z <= bound; z += step) {
+                      for (int x = -bound; x <= bound; x += step) {
+                          biome_t b = g.getBiomeIdAt(4, x, z);
+                          if (!firstRegion) out << ',';
+                          firstRegion = false;
+                          out << "{\"type\":\"" << biomeGroup(b) << "\",\"x\":" << x << ",\"z\":" << z << ",\"radius\":" << radius << '}';
+                      }
+                  }
+                  out << "]}";
+                  std::string json = out.str();
+                  return env->NewStringUTF(json.c_str());
+              } catch (const std::exception& e) {
+                  std::string err = std::string("{\"error\":\"") + e.what() + "\"}";
+                  return env->NewStringUTF(err.c_str());
+              } catch (...) {
+                  return env->NewStringUTF("{\"error\":\"Native generation failed\"}");
+              }
+          }
+          CPP
+
+      - name: Enable native build in Gradle
+        working-directory: android-app
+        run: |
+          cat > app/build.gradle <<'GRADLE'
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'com.brannen.seedmapper'
+              compileSdk 35
+              ndkVersion '28.0.13004108'
+
+              defaultConfig {
+                  applicationId 'com.brannen.seedmapper'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 2
+                  versionName '0.2.0-native'
+                  ndk { abiFilters 'arm64-v8a' }
+                  externalNativeBuild {
+                      cmake { cppFlags '-std=c++23' }
+                  }
+              }
+
+              externalNativeBuild {
+                  cmake {
+                      path file('src/main/cpp/CMakeLists.txt')
+                      version '3.22.1'
+                  }
+              }
+          }
+          GRADLE
+
+      - name: Add JavaScript-to-native bridge
+        working-directory: android-app
+        run: |
+          cat > app/src/main/java/com/brannen/seedmapper/MainActivity.java <<'JAVA'
+          package com.brannen.seedmapper;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+              static { System.loadLibrary("seedmapper"); }
+              private WebView webView;
+              public static native String generateNative(String seed);
+
+              public class SeedBridge {
+                  @JavascriptInterface
+                  public String generate(String seed) { return generateNative(seed); }
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  webView = new WebView(this);
+                  setContentView(webView);
+                  WebSettings s = webView.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setAllowFileAccess(true);
+                  webView.addJavascriptInterface(new SeedBridge(), "SeedraNative");
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.loadUrl("file:///android_asset/web/index.html");
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) webView.goBack();
+                  else super.onBackPressed();
+              }
+          }
+          JAVA
+
+      - name: Replace prototype seed blocker with native generation
+        working-directory: android-app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/assets/web/app.js')
+          s=p.read_text()
+          old="function generate(){const seed=document.getElementById('seed').value.trim();if(seed===SAMPLE_SEED){data=structuredClone?structuredClone(SAMPLE):JSON.parse(JSON.stringify(SAMPLE));zoom=1;panX=0;panY=0;statusEl.className='status ok';statusEl.textContent='Published test seed loaded. The native Xbox One Legacy generator is not bundled yet; arbitrary seeds are intentionally blocked rather than guessed.';draw()}else{data=null;statusEl.className='status error';statusEl.textContent='This build does not yet contain the Legacy Console generator. I will not fake a map for an arbitrary seed.';draw()}}"
+          new="function generate(){const seed=document.getElementById('seed').value.trim();if(!seed){statusEl.className='status error';statusEl.textContent='Enter a seed.';return}try{if(!window.SeedraNative)throw new Error('Native engine unavailable');statusEl.className='status';statusEl.textContent='Generating Xbox One Legacy world…';const raw=window.SeedraNative.generate(seed);const result=JSON.parse(raw);if(result.error)throw new Error(result.error);data=result;zoom=1;panX=0;panY=0;statusEl.className='status ok';statusEl.textContent='Generated offline with Seedra: Xbox One Legacy / ELYTRA / Large world / Large biome scale.';draw()}catch(e){data=null;statusEl.className='status error';statusEl.textContent='Generation failed: '+e.message;draw()}}"
+          if old not in s:
+              raise SystemExit('prototype generate() block not found')
+          s=s.replace(old,new)
+          s=s.replace("document.getElementById('engineBadge').textContent='Offline APK shell — engine pending';","document.getElementById('engineBadge').textContent='Offline native Seedra engine';")
+          p.write_text(s)
+          PY
+
+      - name: Build APK
+        working-directory: android-app
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: xbox-one-seed-mapper-native-debug
+          path: android-app/app/build/outputs/apk/debug/app-debug.apk

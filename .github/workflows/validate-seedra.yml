@@ -80,13 +80,21 @@ jobs:
 
           int main() {
               constexpr std::int64_t seed = -8159138563860309866LL;
+              constexpr auto worldSize = lce::WORLDSIZE::LARGE;
+
               Generator generator(
                   lce::CONSOLE::XBOX1,
                   LCEVERSION::ELYTRA,
                   seed,
-                  lce::WORLDSIZE::LARGE,
+                  worldSize,
                   lce::BIOMESCALE::LARGE
               );
+
+              // Seedra's structure-placement classes keep their own static world-size
+              // configuration; the Generator constructor does not set these for us.
+              Placement::Village<false>::setWorldSize(worldSize);
+              Placement::Mansion::setWorldSize(worldSize);
+              Placement::Feature::setWorldSize(worldSize);
 
               std::cout << "seed=" << seed << "\n";
               std::cout << "console=XBOX1 version=ELYTRA world=LARGE biomeScale=LARGE\n";

@@ -61,6 +61,11 @@ jobs:
               return dx * dx + dz * dz;
           }
 
+          static int floorDiv16(int v) {
+              if (v >= 0) return v / 16;
+              return -(((-v) + 15) / 16);
+          }
+
           static Pos2D nearest(const std::vector<Pos2D>& positions, int x, int z) {
               if (positions.empty()) return Pos2D(std::numeric_limits<int>::min(), std::numeric_limits<int>::min());
               return *std::min_element(positions.begin(), positions.end(), [=](const Pos2D& a, const Pos2D& b) {
@@ -69,12 +74,24 @@ jobs:
           }
 
           static void printCheck(const std::string& name, const Pos2D& actual, int expectedX, int expectedZ) {
+              const int actualChunkX = floorDiv16(actual.x);
+              const int actualChunkZ = floorDiv16(actual.z);
+              const int expectedChunkX = floorDiv16(expectedX);
+              const int expectedChunkZ = floorDiv16(expectedZ);
+              const int chunkDx = actualChunkX - expectedChunkX;
+              const int chunkDz = actualChunkZ - expectedChunkZ;
+              const bool sameOrAdjacent = std::abs(chunkDx) <= 1 && std::abs(chunkDz) <= 1;
+
               std::cout << name
                         << " expected=(" << expectedX << "," << expectedZ << ")"
-                        << " actual=(" << actual.x << "," << actual.z << ")"
+                        << " actualCenter=(" << actual.x << "," << actual.z << ")"
                         << " dx=" << (actual.x - expectedX)
                         << " dz=" << (actual.z - expectedZ)
                         << " distance=" << std::sqrt(static_cast<double>(dist2(actual, expectedX, expectedZ)))
+                        << " expectedChunk=(" << expectedChunkX << "," << expectedChunkZ << ")"
+                        << " placementChunk=(" << actualChunkX << "," << actualChunkZ << ")"
+                        << " chunkDelta=(" << chunkDx << "," << chunkDz << ")"
+                        << " sameOrAdjacentChunk=" << (sameOrAdjacent ? "YES" : "NO")
                         << "\n";
           }
 
@@ -90,14 +107,13 @@ jobs:
                   lce::BIOMESCALE::LARGE
               );
 
-              // Seedra's structure-placement classes keep their own static world-size
-              // configuration; the Generator constructor does not set these for us.
               Placement::Village<false>::setWorldSize(worldSize);
               Placement::Mansion::setWorldSize(worldSize);
               Placement::Feature::setWorldSize(worldSize);
 
               std::cout << "seed=" << seed << "\n";
               std::cout << "console=XBOX1 version=ELYTRA world=LARGE biomeScale=LARGE\n";
+              std::cout << "note=Seedra placement positions are chunk centers: (chunk << 4) + 8\n";
 
               Pos2D spawn = generator.getSpawnBlock();
               printCheck("spawn", spawn, 164, 205);

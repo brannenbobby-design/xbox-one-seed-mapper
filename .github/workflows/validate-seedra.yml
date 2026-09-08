@@ -1,1 +1,57 @@
+name: Validate Xbox One Legacy Generator
 
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/validate-seedra.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang-19 libc++-19-dev libc++abi-19-dev
+
+      - name: Clone Seedra
+        run: |
+          git clone --recursive https://github.com/UtterEvergreen1/Seedra.git Seedra
+
+      - name: Configure Seedra with Clang 19
+        run: |
+          cmake \
+            -S Seedra \
+            -B Seedra/build \
+            -G Ninja \
+            -DLC_BUILD_EXECUTABLE=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++"
+
+      - name: Compile Seedra
+        run: |
+          cmake --build Seedra/build
+
+      - name: Record Seedra build information
+        run: |
+          echo "Seedra compiled successfully with Clang 19." > seedra-validation-results.txt
+          echo "" >> seedra-validation-results.txt
+          echo "Commit:" >> seedra-validation-results.txt
+          git -C Seedra rev-parse HEAD >> seedra-validation-results.txt
+          echo "" >> seedra-validation-results.txt
+          echo "Executables:" >> seedra-validation-results.txt
+          find Seedra/build -type f -executable >> seedra-validation-results.txt
+
+      - name: Upload validation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: seedra-validation-results
+          path: seedra-validation-results.txt

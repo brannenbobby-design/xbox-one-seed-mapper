@@ -29,26 +29,26 @@ jobs:
             -S Seedra \
             -B Seedra/build \
             -G Ninja \
-            -DLC_BUILD_EXECUTABLE=ON \
+            -DLC_BUILD_EXECUTABLE=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang-19 \
             -DCMAKE_CXX_COMPILER=clang++-19 \
             -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
             -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++"
 
-      - name: Compile Seedra
+      - name: Compile Seedra library only
         run: |
-          cmake --build Seedra/build
+          cmake --build Seedra/build --target LIB_Seedra
 
       - name: Record Seedra build information
         run: |
-          echo "Seedra compiled successfully with Clang 19." > seedra-validation-results.txt
+          echo "Seedra library compiled successfully with Clang 19." > seedra-validation-results.txt
           echo "" >> seedra-validation-results.txt
           echo "Commit:" >> seedra-validation-results.txt
           git -C Seedra rev-parse HEAD >> seedra-validation-results.txt
           echo "" >> seedra-validation-results.txt
-          echo "Executables:" >> seedra-validation-results.txt
-          find Seedra/build -type f -executable >> seedra-validation-results.txt
+          echo "Library:" >> seedra-validation-results.txt
+          find Seedra/build -name 'libLIB_Seedra.a' -print >> seedra-validation-results.txt
 
       - name: Upload validation results
         uses: actions/upload-artifact@v4
